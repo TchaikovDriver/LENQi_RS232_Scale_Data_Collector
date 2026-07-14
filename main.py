@@ -1,3 +1,4 @@
+import sys
 import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -12,6 +13,20 @@ SAMPLE_INTERVAL = 0.1
 STABLE_DURATION = 5.0
 WEIGHT_THRESHOLD = Decimal("0.1")
 RESULTS_DIR = Path("results")
+
+
+def ensure_stdin() -> None:
+    if sys.stdin is None:
+        raise RuntimeError(
+            "标准输入不可用。本程序需要在控制台中运行，"
+            "请使用 --console 模式打包（不要使用 --windowed），"
+            "并在 cmd 或 PowerShell 中启动。"
+        )
+
+
+def prompt(message: str) -> str:
+    ensure_stdin()
+    return input(message)
 
 
 def list_serial_ports() -> list[str]:
@@ -54,14 +69,14 @@ def select_port() -> serial.Serial:
         ports = list_serial_ports()
         if not ports:
             print("未检测到可用串口，请检查 USB-RS232 连接后重试。")
-            input("按回车键重新扫描...")
+            prompt("按回车键重新扫描...")
             continue
 
         print("\n可用串口：")
         for index, port in enumerate(ports, start=1):
             print(f"  {index}. {port}")
 
-        choice = input("请输入数字选择端口: ").strip()
+        choice = prompt("请输入数字选择端口: ").strip()
         if not choice.isdigit():
             print("请输入有效数字。")
             continue
@@ -158,7 +173,7 @@ def main() -> None:
 
     try:
         while True:
-            command = input('\n输入 1 开始采集，输入 q 退出: ').strip()
+            command = prompt("\n输入 1 开始采集，输入 q 退出: ").strip()
             if command.lower() == "q":
                 break
             if command != "1":
@@ -172,4 +187,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as exc:
+        print(exc)
+        if sys.stdin is not None:
+            input("\n按回车键退出...")

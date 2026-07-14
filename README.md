@@ -103,3 +103,26 @@ python main.py
 
 - 重量需先发生变化，之后连续 5 秒保持不变才会结束
 - 若重量持续波动，采集会一直进行直到稳定
+
+## Windows 可执行文件
+
+使用 PyInstaller 打包：
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --console main.py
+```
+
+生成的文件位于 `dist/main.exe`。
+
+**注意：必须使用 `--console` 模式，不要使用 `--windowed`。**
+
+本程序依赖 `input()` 进行交互，`--windowed` 会隐藏控制台并导致 `lost sys.stdin` 错误。
+
+建议在 **cmd** 或 **PowerShell** 中运行：
+
+```powershell
+.\main.exe
+```
+
+不要直接双击运行，否则窗口可能在出错后立即关闭，不便查看日志。

@@ -20,7 +20,7 @@ jobs:
           pip install -r requirements.txt
           
       - name: Build EXE
-        run: pyinstaller --onefile --windowed main.py
+        run: pyinstaller --onefile --console main.py
         
       - name: Upload artifact
         uses: actions/upload-artifact@v4
