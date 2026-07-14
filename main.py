@@ -5,12 +5,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import serial
 import serial.tools.list_ports
 
 BAUD_RATE = 9600
-SAMPLE_INTERVAL = 0.1
-STABLE_DURATION = 5.0
+SAMPLE_INTERVAL = 0.05
+STABLE_DURATION = 4.5
 TRIM_TAIL_SECONDS = 4.0
 WEIGHT_THRESHOLD = Decimal("0.1")
 RESULTS_DIR = Path("results")
@@ -49,6 +50,24 @@ def read_weight(ser: serial.Serial) -> Decimal:
     return parse_weight(line)
 
 
+def read_latest_weight(ser: serial.Serial) -> Decimal:
+    latest: Decimal | None = None
+
+    while ser.in_waiting:
+        line = ser.readline()
+        if not line:
+            break
+        try:
+            latest = parse_weight(line)
+        except (ValueError, InvalidOperation):
+            continue
+
+    if latest is not None:
+        return latest
+
+    return read_weight(ser)
+
+
 def connect_serial(port: str) -> serial.Serial | None:
     try:
         ser = serial.Serial(
@@ -63,6 +82,19 @@ def connect_serial(port: str) -> serial.Serial | None:
     except serial.SerialException as exc:
         print(f"无法连接端口 {port}: {exc}")
         return None
+
+
+def reconnect_serial(ser: serial.Serial) -> serial.Serial:
+    port = ser.port
+    if ser.is_open:
+        ser.close()
+
+    new_ser = connect_serial(port)
+    if new_ser is None:
+        raise serial.SerialException(f"无法重新连接端口 {port}")
+
+    print(f"已重新连接 {port}，准备采集。")
+    return new_ser
 
 
 def select_port() -> serial.Serial:
@@ -120,7 +152,7 @@ def collect_samples(ser: serial.Serial) -> list[tuple[datetime, Decimal]]:
         time.sleep(SAMPLE_INTERVAL)
 
         try:
-            weight = read_weight(ser)
+            weight = read_latest_weight(ser)
         except (serial.SerialException, ValueError, InvalidOperation) as exc:
             print(f"读取重量失败，跳过本次采样: {exc}")
             continue
@@ -154,11 +186,15 @@ def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
     weights = [float(w) for _, w in trimmed]
 
     plt.figure(figsize=(10, 5))
-    plt.plot(times, weights, marker="o", markersize=3, linewidth=1)
-    plt.xlabel("Time (Milliseconds)")
-    plt.ylabel("Weight (Grams)")
-    plt.title("Flow Curve")
-    plt.grid(True, alpha=0.3)
+    ax = plt.gca()
+    ax.plot(times, weights, marker="o", markersize=3, linewidth=1)
+    ax.set_xlabel("Time (Milliseconds)")
+    ax.set_ylabel("Weight (Grams)")
+    ax.set_title("Flow Curve")
+    ax.xaxis.set_major_locator(MultipleLocator(1000))
+    if times:
+        ax.set_xlim(0, (int(max(times) // 1000) + 1) * 1000)
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
     filename = datetime.now().strftime("%Y%m%d%H%M") + ".png"
@@ -169,10 +205,12 @@ def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
     return output_path
 
 
-def run_collection(ser: serial.Serial) -> None:
+def run_collection(ser: serial.Serial) -> serial.Serial:
+    ser = reconnect_serial(ser)
     samples = collect_samples(ser)
     output_path = save_chart(samples)
     print(f"采集完成，共 {len(samples)} 条数据，图表已保存至 {output_path}")
+    return ser
 
 
 def main() -> None:
@@ -187,7 +225,7 @@ def main() -> None:
                 print("无效输入，请输入 1 或 q。")
                 continue
 
-            run_collection(ser)
+            ser = run_collection(ser)
     finally:
         ser.close()
         print("串口已关闭。")
