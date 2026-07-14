@@ -25,5 +25,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
+          name: rs232_scale
           path: dist/*.exe

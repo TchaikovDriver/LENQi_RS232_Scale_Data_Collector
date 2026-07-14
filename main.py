@@ -1,6 +1,6 @@
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -11,6 +11,7 @@ import serial.tools.list_ports
 BAUD_RATE = 9600
 SAMPLE_INTERVAL = 0.1
 STABLE_DURATION = 5.0
+TRIM_TAIL_SECONDS = 4.0
 WEIGHT_THRESHOLD = Decimal("0.1")
 RESULTS_DIR = Path("results")
 
@@ -142,9 +143,15 @@ def collect_samples(ser: serial.Serial) -> list[tuple[datetime, Decimal]]:
 def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    start_time = samples[0][0]
-    times = [(ts - start_time).total_seconds() * 1000 for ts, _ in samples]
-    weights = [float(w) for _, w in samples]
+    end_time = samples[-1][0]
+    cutoff_time = end_time - timedelta(seconds=TRIM_TAIL_SECONDS)
+    trimmed = [(ts, w) for ts, w in samples if ts <= cutoff_time]
+    if not trimmed:
+        trimmed = samples
+
+    start_time = trimmed[0][0]
+    times = [(ts - start_time).total_seconds() * 1000 for ts, _ in trimmed]
+    weights = [float(w) for _, w in trimmed]
 
     plt.figure(figsize=(10, 5))
     plt.plot(times, weights, marker="o", markersize=3, linewidth=1)
