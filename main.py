@@ -85,16 +85,18 @@ def connect_serial(port: str) -> serial.Serial | None:
 
 
 def reconnect_serial(ser: serial.Serial) -> serial.Serial:
-    port = ser.port
+    # port = ser.port
     if ser.is_open:
-        ser.close()
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+    return ser
 
-    new_ser = connect_serial(port)
-    if new_ser is None:
-        raise serial.SerialException(f"无法重新连接端口 {port}")
+    # new_ser = connect_serial(port)
+    # if new_ser is None:
+    #     raise serial.SerialException(f"无法重新连接端口 {port}")
 
-    print(f"已重新连接 {port}，准备采集。")
-    return new_ser
+    # print(f"已重新连接 {port}，准备采集。")
+    # return new_ser
 
 
 def select_port() -> serial.Serial:
@@ -172,44 +174,113 @@ def collect_samples(ser: serial.Serial) -> list[tuple[datetime, Decimal]]:
     return samples
 
 
-def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
+def trim_samples(samples: list[tuple[datetime, Decimal]]) -> list[tuple[datetime, Decimal]]:
     end_time = samples[-1][0]
     cutoff_time = end_time - timedelta(seconds=TRIM_TAIL_SECONDS)
     trimmed = [(ts, w) for ts, w in samples if ts <= cutoff_time]
-    if not trimmed:
-        trimmed = samples
+    return trimmed if trimmed else samples
 
-    start_time = trimmed[0][0]
-    times = [(ts - start_time).total_seconds() * 1000 for ts, _ in trimmed]
-    weights = [float(w) for _, w in trimmed]
 
+def _interpolate_weight(samples: list[tuple[datetime, Decimal]], target_time: datetime) -> float:
+    if target_time <= samples[0][0]:
+        return float(samples[0][1])
+    if target_time >= samples[-1][0]:
+        return float(samples[-1][1])
+
+    for i in range(len(samples) - 1):
+        t1, w1 = samples[i]
+        t2, w2 = samples[i + 1]
+        if t1 <= target_time <= t2:
+            ratio = (target_time - t1).total_seconds() / (t2 - t1).total_seconds()
+            return float(w1) + ratio * (float(w2) - float(w1))
+
+    return float(samples[-1][1])
+
+
+def compute_weight_rate(
+    samples: list[tuple[datetime, Decimal]], window_seconds: float = 0.5
+) -> tuple[list[float], list[float]]:
+    if len(samples) < 2:
+        return [], []
+
+    start_time = samples[0][0]
+    total_seconds = (samples[-1][0] - start_time).total_seconds()
+
+    times_ms: list[float] = []
+    rates: list[float] = []
+
+    t = window_seconds
+    while t <= total_seconds:
+        t_prev = start_time + timedelta(seconds=t - window_seconds)
+        t_now = start_time + timedelta(seconds=t)
+
+        w_prev = _interpolate_weight(samples, t_prev)
+        w_now = _interpolate_weight(samples, t_now)
+        rate = (w_now - w_prev) / window_seconds
+
+        times_ms.append(t * 1000)
+        rates.append(rate)
+        t += window_seconds
+
+    return times_ms, rates
+
+
+def _draw_chart(
+    times: list[float],
+    values: list[float],
+    ylabel: str,
+    title: str,
+    output_path: Path,
+) -> None:
     plt.figure(figsize=(10, 5))
     ax = plt.gca()
-    ax.plot(times, weights, marker="o", markersize=3, linewidth=1)
+    ax.plot(times, values, marker="o", markersize=3, linewidth=1)
     ax.set_xlabel("Time (Milliseconds)")
-    ax.set_ylabel("Weight (Grams)")
-    ax.set_title("Flow Curve")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
     ax.xaxis.set_major_locator(MultipleLocator(1000))
     if times:
         ax.set_xlim(0, (int(max(times) // 1000) + 1) * 1000)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-
-    filename = datetime.now().strftime("%Y%m%d%H%M") + ".png"
-    output_path = RESULTS_DIR / filename
     plt.savefig(output_path, dpi=150)
     plt.close()
 
+
+def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    trimmed = trim_samples(samples)
+    start_time = trimmed[0][0]
+    times = [(ts - start_time).total_seconds() * 1000 for ts, _ in trimmed]
+    weights = [float(w) for _, w in trimmed]
+
+    filename = datetime.now().strftime("%Y%m%d%H%M") + ".png"
+    output_path = RESULTS_DIR / filename
+    _draw_chart(times, weights, "Weight (Grams)", "Flow Curve", output_path)
     return output_path
+
+
+def save_rate_chart(samples: list[tuple[datetime, Decimal]], base_path: Path) -> Path | None:
+    trimmed = trim_samples(samples)
+    times_ms, rates = compute_weight_rate(trimmed, window_seconds=0.5)
+    if not times_ms:
+        return None
+
+    rate_path = base_path.with_name(base_path.stem + "_rate" + base_path.suffix)
+    _draw_chart(times_ms, rates, "Weight Change Rate (g/s)", "Flow Rate (0.5s window)", rate_path)
+    return rate_path
 
 
 def run_collection(ser: serial.Serial) -> serial.Serial:
     ser = reconnect_serial(ser)
     samples = collect_samples(ser)
     output_path = save_chart(samples)
-    print(f"采集完成，共 {len(samples)} 条数据，图表已保存至 {output_path}")
+    rate_path = save_rate_chart(samples, output_path)
+    print(f"采集完成，共 {len(samples)} 条数据")
+    print(f"  重量曲线: {output_path}")
+    if rate_path:
+        print(f"  变化率曲线: {rate_path}")
     return ser
 
 
