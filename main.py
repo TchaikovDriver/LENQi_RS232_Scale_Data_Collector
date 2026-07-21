@@ -1,3 +1,4 @@
+import csv
 import sys
 import time
 from datetime import datetime, timedelta
@@ -206,7 +207,7 @@ def compute_weight_rate(
     start_time = samples[0][0]
     total_seconds = (samples[-1][0] - start_time).total_seconds()
 
-    times_ms: list[float] = []
+    times_s: list[float] = []
     rates: list[float] = []
 
     t = window_seconds
@@ -218,11 +219,11 @@ def compute_weight_rate(
         w_now = _interpolate_weight(samples, t_now)
         rate = (w_now - w_prev) / window_seconds
 
-        times_ms.append(t * 1000)
+        times_s.append(t)
         rates.append(rate)
         t += window_seconds
 
-    return times_ms, rates
+    return times_s, rates
 
 
 def _draw_chart(
@@ -231,16 +232,26 @@ def _draw_chart(
     ylabel: str,
     title: str,
     output_path: Path,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    x_major_step: float = 1,
+    y_major_step: float | None = None,
 ) -> None:
     plt.figure(figsize=(10, 5))
     ax = plt.gca()
     ax.plot(times, values, marker="o", markersize=3, linewidth=1)
-    ax.set_xlabel("Time (Milliseconds)")
+    ax.set_xlabel("Time (Seconds)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.xaxis.set_major_locator(MultipleLocator(1000))
-    if times:
-        ax.set_xlim(0, (int(max(times) // 1000) + 1) * 1000)
+    ax.xaxis.set_major_locator(MultipleLocator(x_major_step))
+    if y_major_step is not None:
+        ax.yaxis.set_major_locator(MultipleLocator(y_major_step))
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    elif times:
+        ax.set_xlim(0, int(max(times)) + 1)
+    if ylim is not None:
+        ax.set_ylim(ylim)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
@@ -252,7 +263,7 @@ def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
 
     trimmed = trim_samples(samples)
     start_time = trimmed[0][0]
-    times = [(ts - start_time).total_seconds() * 1000 for ts, _ in trimmed]
+    times = [(ts - start_time).total_seconds() for ts, _ in trimmed]
     weights = [float(w) for _, w in trimmed]
 
     filename = datetime.now().strftime("%Y%m%d%H%M") + ".png"
@@ -263,13 +274,48 @@ def save_chart(samples: list[tuple[datetime, Decimal]]) -> Path:
 
 def save_rate_chart(samples: list[tuple[datetime, Decimal]], base_path: Path) -> Path | None:
     trimmed = trim_samples(samples)
-    times_ms, rates = compute_weight_rate(trimmed, window_seconds=0.5)
-    if not times_ms:
+    times_s, rates = compute_weight_rate(trimmed, window_seconds=0.5)
+    if not times_s:
         return None
 
     rate_path = base_path.with_name(base_path.stem + "_rate" + base_path.suffix)
-    _draw_chart(times_ms, rates, "Weight Change Rate (g/s)", "Flow Rate (0.5s window)", rate_path)
+    _draw_chart(
+        times_s,
+        rates,
+        "Weight Change Rate (g/s)",
+        "Flow Rate (0.5s window)",
+        rate_path,
+        xlim=(0, 30),
+        ylim=(0, 30),
+        x_major_step=1,
+        y_major_step=1,
+    )
     return rate_path
+
+
+def save_csv(samples: list[tuple[datetime, Decimal]], base_path: Path) -> Path:
+    trimmed = trim_samples(samples)
+    start_time = trimmed[0][0]
+    times_s = [(ts - start_time).total_seconds() for ts, _ in trimmed]
+    weights = [float(w) for _, w in trimmed]
+
+    rate_times_s, rates = compute_weight_rate(trimmed, window_seconds=0.5)
+
+    csv_path = base_path.with_suffix(".csv")
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time_s", "weight_g", "rate_time_s", "rate_g_per_s"])
+        max_len = max(len(times_s), len(rate_times_s))
+        for i in range(max_len):
+            row = [
+                times_s[i] if i < len(times_s) else "",
+                weights[i] if i < len(weights) else "",
+                rate_times_s[i] if i < len(rate_times_s) else "",
+                rates[i] if i < len(rates) else "",
+            ]
+            writer.writerow(row)
+
+    return csv_path
 
 
 def run_collection(ser: serial.Serial) -> serial.Serial:
@@ -277,10 +323,12 @@ def run_collection(ser: serial.Serial) -> serial.Serial:
     samples = collect_samples(ser)
     output_path = save_chart(samples)
     rate_path = save_rate_chart(samples, output_path)
+    csv_path = save_csv(samples, output_path)
     print(f"采集完成，共 {len(samples)} 条数据")
     print(f"  重量曲线: {output_path}")
     if rate_path:
         print(f"  变化率曲线: {rate_path}")
+    print(f"  原始数据: {csv_path}")
     return ser
 
 
